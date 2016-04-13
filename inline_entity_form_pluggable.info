@@ -1,0 +1,13 @@
+name = Inline Entity Form Pluggable
+description = Creates plugins for the Inline Entity Form controllers to allow multiple operations to occur without interfering with the controller itself.
+core = 7.x
+version = 7.x-1.0
+package = Inline Entity Form Pluggable
+
+dependencies[] = entity
+dependencies[] = inline_entity_form
+
+files[] = includes/InlineEntityFormPluggableControllerPluginInterface.inc
+files[] = includes/InlineEntityFormPluggableControllerPlugin.inc
+files[] = includes/InlineEntityFormPluggableController.inc
+files[] = includes/NodeInlineEntityFormPluggableController.inc

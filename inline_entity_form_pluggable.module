@@ -1,0 +1,245 @@
+<?php
+/**
+ * @file
+ * inline_entity_form_pluggable.module
+ */
+
+/**
+ * Implements hook_module_implements_alter().
+ */
+function inline_entity_form_pluggable_module_implements_alter(&$implementations, $hook) {
+  if ('module_implements_alter' == $hook || 'entity_info_alter' == $hook) {
+    $group = $implementations['inline_entity_form_pluggable'];
+    unset($implementations['inline_entity_form_pluggable']);
+    $implementations['inline_entity_form_pluggable'] = $group;
+  }
+  // Remove the Inline Entity Form module's implementation of
+  // hook_field_attach_submit so that we can ensure that any instances of
+  // our derived controller has is invoked when needed.
+  elseif ('field_attach_submit' == $hook && isset($implementations['inline_entity_form'])) {
+    unset($implementations['inline_entity_form']);
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function inline_entity_form_pluggable_entity_info_alter(&$entity_info) {
+  if (isset($entity_info['node'])) {
+    $entity_info['node']['inline entity form']['controller'] = 'NodeInlineEntityFormPluggableController';
+  }
+}
+
+/**
+ * Implements hook_field_attach_submit().
+ *
+ * Verbatim copy of the Inline Entity Form's implementation with a minor change
+ * to force the controller to perform save functionality if the controller is
+ * an instance of InlineEntityFormPluggableController.
+ *
+ * @see inline_entity_form_field_attach_submit().
+ */
+function inline_entity_form_pluggable_field_attach_submit($parent_entity_type, $parent_entity, $form, &$form_state) {
+  list(, , $bundle_name) = entity_extract_ids($parent_entity_type, $parent_entity);
+  foreach (field_info_instances($parent_entity_type, $bundle_name) as $instance_name => $instance) {
+    if (isset($instance['widget']) && strpos($instance['widget']['type'], 'inline_entity_form') === 0) {
+      $field_name = $instance['field_name'];
+      if (!isset($form[$field_name])) {
+        // The field wasn't found on this form, skip it.
+        // Usually happens on stub entity forms that don't contain all fields.
+        continue;
+      }
+      $langcode = $form[$field_name]['#language'];
+      if (!isset($form[$field_name][$langcode]['#ief_id'])) {
+        // The field is present on the form, but the IEF widget wasn't added,
+        // usually due to inline_entity_form_field_widget_properties_alter().
+        continue;
+      }
+      $ief_id = $form[$field_name][$langcode]['#ief_id'];
+      if (empty($form_state['inline_entity_form'][$ief_id])) {
+        // No data found, no need to do anything.
+        continue;
+      }
+
+      $values = $form_state['inline_entity_form'][$ief_id];
+      $entity_type = $values['settings']['entity_type'];
+      $controller = inline_entity_form_get_controller($instance);
+      $context = array(
+        'parent_entity_type' => $parent_entity_type,
+        'parent_entity' => $parent_entity,
+        // For each entity, let the controller act on the item data itself,
+        // specifically so that full entity is not saved if it is not needed.
+        'item' => NULL,
+      );
+
+      // Delete any entities staged for deletion.
+      if (!empty($values['delete'])) {
+        $controller->delete(array_values($values['delete']), $context);
+      }
+
+      // Respect the entity weights.
+      uasort($values['entities'], 'drupal_sort_weight');
+      // Go through the IEF data and assemble a list of ids.
+      $entity_ids = array();
+      $need_reset = FALSE;
+      foreach ($values['entities'] as $item) {
+        // Ensure that the controller save implementation is invoked even if the
+        // item does not need to be saved should the controller be an instanceof
+        // InlineEntityFormPluggableController.
+        $context['item'] = $item;
+        if ($item['needs_save'] || (!$item['needs_save'] && ($controller instanceof InlineEntityFormPluggableController))) {
+          $controller->save($item['entity'], $context);
+          $need_reset = TRUE;
+        }
+
+        list($entity_id) = entity_extract_ids($entity_type, $item['entity']);
+        $entity_ids[] = array($values['settings']['column'] => $entity_id);
+      }
+
+      // Prevent the entity from showing up in subsequent add forms.
+      // @todo Investigate a cleaner fix.
+      if (isset($form['#op']) && $form['#op'] == 'add' && $need_reset) {
+        $form_state['inline_entity_form'][$ief_id]['entities'] = array();
+      }
+
+      if (!empty($entity_ids)) {
+        // Set the list of ids as the field value.
+        $parent_entity->{$field_name}[$langcode] = $entity_ids;
+      }
+    }
+  }
+}
+
+/**
+ * Retrieve Inline Entity Form plugin info.
+ *
+ * @param string $entity_type
+ *   The entity type to retrieve plugins for, if not specified all plugins are
+ *   returned.
+ *
+ * @return array
+ *   An array of plugin information.
+ */
+function inline_entity_form_pluggable_get_plugin_info($entity_type = NULL) {
+  static $static_fast_cache = NULL;
+  if (NULL === $static_fast_cache) {
+    $static_fast_cache = array();
+    inline_entity_form_pluggable_module_include();
+    foreach (module_implements('inline_entity_form_pluggable_plugins') as $module) {
+      $function = $module . '_inline_entity_form_pluggable_plugins';
+      $module_plugins = $function();
+      if (!is_array($module_plugins)) {
+        $module_plugins = array();
+      }
+
+      foreach ($module_plugins as $plugin_name => $plugin_info) {
+        if (empty($plugin_info['class name'])) {
+          continue;
+        }
+
+        $plugin_info += array(
+          'machine_name' => $plugin_name,
+          'title' => $plugin_name,
+          'description' => '',
+          'class name' => '',
+          'file' => $module . '.inline_entity_form_pluggable.inc',
+          'file path' => drupal_get_path('module', $module),
+          'entity types' => array(),
+        );
+
+        $file_path = $plugin_info['file path'] . '/' . $plugin_info['file'];
+        if (file_exists($file_path) && !empty($plugin_info['entity types'])) {
+          include_once $file_path;
+          if (!class_exists($plugin_info['class name'])) {
+            continue;
+          }
+
+          foreach ($plugin_info['entity types'] as $type) {
+            $static_fast_cache[$type][$plugin_name] = $plugin_info;
+          }
+        }
+      }
+    }
+  }
+
+  if (!empty($entity_type)) {
+    return isset($static_fast_cache[$entity_type]) ? $static_fast_cache[$entity_type] : array();
+  }
+
+  return $static_fast_cache;
+}
+
+/**
+ * Retrieves plugin instances for a particular Inline Entity Form controller.
+ *
+ * @param InlineEntityFormPluggableController $controller
+ *   The controller to retrieve plugin instances for.
+ *
+ * @return array
+ *   Returns an associative array of plugin info and instance for a particular
+ *   controller instance keyed by the plugin name.
+ *
+ * @throws Exception
+ *   * Throws an Exception if the plugin class is not an instance of
+ *     InlineEntityFormPluggableControllerPluginInterface.
+ */
+function inline_entity_form_pluggable_get_plugins(InlineEntityFormPluggableController $controller) {
+  static $static_fast_cache = array();
+  if (!isset($static_fast_cache[$controller->entityType()])) {
+    $static_fast_cache[$controller->entityType()] = array();
+    $plugin_info = inline_entity_form_pluggable_get_plugin_info($controller->entityType());
+    foreach ($plugin_info as $plugin_name => $info) {
+      if (!class_exists($info['class name'])) {
+        break;
+      }
+
+      $instance = new $info['class name']($controller->entityType());
+      if (!($instance instanceof InlineEntityFormPluggableControllerPluginInterface)) {
+        throw new Exception(t('!plugin_class is not an instance of "InlineEntityFormPluggableControllerPluginInterface".', array(
+          '!plugin_class' => $info['class name'],
+        )));
+      }
+
+      $static_fast_cache[$controller->entityType()][$plugin_name] = array(
+        'info' => $info,
+        'plugin' => $instance,
+      );
+    }
+  }
+  return $static_fast_cache[$controller->entityType()];
+}
+
+/**
+ * Performs module file includes for all inline_entity_form_pluggable files.
+ */
+function inline_entity_form_pluggable_module_include() {
+  ctools_include('plugins');
+  ctools_plugin_api_include('inline_entity_form_pluggable', inline_entity_form_pluggable_ctools_plugin_api_hook_name(), inline_entity_form_pluggable_api_version(), inline_entity_form_pluggable_api_version());
+}
+
+/**
+ * Returns the API version (required for Ctools).
+ *
+ * @return string
+ *   The current API version.
+ */
+function inline_entity_form_pluggable_api_version() {
+  return '1.0';
+}
+
+/**
+ * Implements hook_ctools_plugin_api_hook_name().
+ */
+function inline_entity_form_pluggable_ctools_plugin_api_hook_name() {
+  return 'inline_entity_form_pluggable';
+}
+
+/**
+ * Implements hook_inline_entity_form_pluggable_api().
+ */
+function inline_entity_form_pluggable_inline_entity_form_pluggable_api() {
+  return array(
+    'api' => inline_entity_form_pluggable_api_version(),
+    'path' => drupal_get_path('module', 'inline_entity_form_pluggable') . '/plugins',
+  );
+}

@@ -1,0 +1,8 @@
+name = Inline Entity Form Pluggable - Workbench
+description = Provides a handle to allow for referenced child nodes to match the parent node's workbench state.
+core = 7.x
+version = 7.x-1.0
+package = Inline Entity Form Pluggable
+
+dependencies[] = inline_entity_form_pluggable
+dependencies[] = workbench_moderation

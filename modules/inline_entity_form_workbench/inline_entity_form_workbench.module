@@ -1,0 +1,97 @@
+<?php
+/**
+ * @file
+ * inline_entity_form_workbench.module
+ */
+
+/**
+ * Implements hook_inline_entity_form_pluggable_api().
+ */
+function inline_entity_form_workbench_inline_entity_form_pluggable() {
+  return array('api' => 1.0);
+}
+
+/**
+ * Implements hook_workbench_moderation_transition().
+ */
+function inline_entity_form_workbench_workbench_moderation_transition($parent_node, $previous_state, $new_state) {
+  if (inline_entity_form_workbench_node_status_get_processed_state($parent_node)) {
+    // The Inline Entity Form Plugin controller has already invoked required
+    // plugins so we should just return and halt processing the data once again.
+    return;
+  }
+
+  inline_entity_form_workbench_node_status_set_processed_state($parent_node, TRUE);
+  module_load_include('inc', 'inline_entity_form_workbench', 'plugins/InlineEntityFormWorkbenchParentNodeMatch');
+  $parent_wrapper = entity_metadata_wrapper('node', $parent_node);
+  foreach (field_info_instances('node', $parent_node->type) as $field_name => $field_instance) {
+    $field_info = field_info_field($field_name);
+    if ('entityreference' == $field_info['type'] && 'inline_entity_form' == $field_instance['widget']['module']) {
+      if (isset($field_info['settings']['target_type']) && 'node' == $field_info['settings']['target_type']) {
+        if (isset($parent_wrapper->{$field_name}) && $entity_field_wrapper = $parent_wrapper->{$field_name}) {
+          if (!($entity_field_wrapper instanceof EntityDrupalWrapper)) {
+            throw new Exception(t('Not implemented or supported in this version.'));
+          }
+
+          if ($entity = $entity_field_wrapper->value()) {
+            $plugin = new InlineEntityFormWorkbenchParentNodeMatch('node');
+            $entity_needs_save = $plugin->upgradeNodeEntityStatus($entity, $parent_node);
+            if ($entity_needs_save) {
+              node_save($entity);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Internal function for tracking processed state of a parent node.
+ *
+ * @param object $parent_node
+ *   The parent node.
+ * @param bool $state
+ *   The processed state as a boolean.
+ */
+function inline_entity_form_workbench_node_status_set_processed_state($parent_node, $state) {
+  $node_id = _inline_entity_form_workbench_node_status_node_processed_key($parent_node);
+  $static_fast_cache = &drupal_static('inline_entity_form_workbench_node_status_processed', array());
+  $static_fast_cache[$node_id] = (bool) $state;
+}
+
+/**
+ * Internal function for retrieving the current processed state for a node.
+ *
+ * @param object $parent_node
+ *   The parent node.
+ *
+ * @return bool
+ *   The processed state.
+ */
+function inline_entity_form_workbench_node_status_get_processed_state($parent_node) {
+  $node_id = _inline_entity_form_workbench_node_status_node_processed_key($parent_node);
+  $static_fast_cache = &drupal_static('inline_entity_form_workbench_node_status_processed', array());
+  return isset($static_fast_cache[$node_id]) ? $static_fast_cache[$node_id] : FALSE;
+}
+
+/**
+ * Internal function for generating a node identifier.
+ *
+ * @param object $parent_node
+ *   The node object to generate an identifier for.
+ *
+ * @return string
+ *   The node identifier.
+ */
+function _inline_entity_form_workbench_node_status_node_processed_key($parent_node) {
+  $node_id = NULL;
+  if (is_object($parent_node)) {
+    // There is a possibility of collision if bulk processing multiple nodes.
+    $node_id = REQUEST_TIME . '--' . $parent_node->title;
+  }
+  else {
+    $node_id = $parent_node;
+  }
+  return $node_id;
+}
